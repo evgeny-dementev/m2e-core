@@ -25,6 +25,8 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.net.MalformedURLException;
+import java.net.URL;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -37,6 +39,7 @@ import org.eclipse.core.runtime.OperationCanceledException;
 import org.apache.maven.index.updater.AbstractResourceFetcher;
 import org.apache.maven.wagon.authentication.AuthenticationInfo;
 import org.apache.maven.wagon.proxy.ProxyInfo;
+import org.apache.maven.wagon.proxy.ProxyUtils;
 
 import org.eclipse.m2e.core.internal.MavenPluginActivator;
 
@@ -133,6 +136,13 @@ public class AetherClientResourceFetcher extends AbstractResourceFetcher {
 
       if(proxyInfo == null) {
         return null;
+      }
+
+      try {
+        if ( ProxyUtils.validateNonProxyHosts( proxyInfo, new URL(baseUrl).getHost() ) ) {
+          return null;
+        }
+      } catch (MalformedURLException ignore) {
       }
 
       return new AetherClientProxy() {
