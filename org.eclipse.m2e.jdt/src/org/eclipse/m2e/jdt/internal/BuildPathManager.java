@@ -32,6 +32,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Properties;
 import java.util.Set;
+import java.util.TreeSet;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 
@@ -43,7 +45,10 @@ import org.eclipse.core.resources.IFile;
 import org.eclipse.core.resources.IProject;
 import org.eclipse.core.resources.IResourceChangeEvent;
 import org.eclipse.core.resources.IResourceChangeListener;
+import org.eclipse.core.resources.IResourceDelta;
+import org.eclipse.core.resources.IResourceDeltaVisitor;
 import org.eclipse.core.resources.ResourcesPlugin;
+import org.eclipse.core.resources.WorkspaceJob;
 import org.eclipse.core.runtime.CoreException;
 import org.eclipse.core.runtime.IPath;
 import org.eclipse.core.runtime.IProgressMonitor;
@@ -51,12 +56,14 @@ import org.eclipse.core.runtime.IStatus;
 import org.eclipse.core.runtime.NullProgressMonitor;
 import org.eclipse.core.runtime.Path;
 import org.eclipse.core.runtime.Status;
+import org.eclipse.core.runtime.SubMonitor;
 import org.eclipse.core.runtime.jobs.Job;
 import org.eclipse.jdt.core.IClasspathAttribute;
 import org.eclipse.jdt.core.IClasspathContainer;
 import org.eclipse.jdt.core.IClasspathEntry;
 import org.eclipse.jdt.core.IJavaModel;
 import org.eclipse.jdt.core.IJavaProject;
+import org.eclipse.jdt.core.IModuleDescription;
 import org.eclipse.jdt.core.IPackageFragmentRoot;
 import org.eclipse.jdt.core.JavaCore;
 import org.eclipse.jdt.core.JavaModelException;
@@ -100,6 +107,8 @@ public class BuildPathManager implements IMavenProjectChangedListener, IResource
 
   private static final String PROPERTY_SRC_ROOT = ".srcRoot"; //$NON-NLS-1$
 
+  private static final String PROPERTY_SRC_ENCODING = ".srcEncoding"; //$NON-NLS-1$
+
   private static final String PROPERTY_SRC_PATH = ".srcPath"; //$NON-NLS-1$
 
   private static final String PROPERTY_JAVADOC_URL = ".javadoc"; //$NON-NLS-1$
@@ -127,6 +136,8 @@ public class BuildPathManager implements IMavenProjectChangedListener, IResource
   final IMaven maven;
 
   final File stateLocationDir;
+
+  final Map<String, Set<String>> requiredModulesMap = new ConcurrentHashMap<String, Set<String>>();
 
   private final DownloadSourcesJob downloadSourcesJob;
 
@@ -298,6 +309,12 @@ public class BuildPathManager implements IMavenProjectChangedListener, IResource
         }
         if(srcPath == null && a != null) {
           srcPath = getSourcePath(a);
+        }
+        if(sourceAttachment != null) {
+          String srcEncoding = sourceAttachment.getProperty(key + PROPERTY_SRC_ENCODING);
+          if(srcEncoding != null) {
+            desc.getClasspathAttributes().put(IClasspathAttribute.SOURCE_ATTACHMENT_ENCODING, srcEncoding);
+          }
         }
 
         // configure javadocs if available
@@ -510,6 +527,10 @@ public class BuildPathManager implements IMavenProjectChangedListener, IResource
         if(entry.getSourceAttachmentRootPath() != null) {
           props.put(path + PROPERTY_SRC_ROOT, entry.getSourceAttachmentRootPath().toPortableString());
         }
+        String sourceAttachmentEncoding = getSourceAttachmentEncoding(entry);
+        if(sourceAttachmentEncoding != null) {
+          props.put(path + PROPERTY_SRC_ENCODING, sourceAttachmentEncoding);
+        }
         String javadocUrl = getJavadocLocation(entry);
         if(javadocUrl != null) {
           props.put(path + PROPERTY_JAVADOC_URL, javadocUrl);
@@ -556,14 +577,11 @@ public class BuildPathManager implements IMavenProjectChangedListener, IResource
 
   /** public for unit tests only */
   public String getJavadocLocation(IClasspathEntry entry) {
-    IClasspathAttribute[] attributes = entry.getExtraAttributes();
-    for(int j = 0; j < attributes.length; j++ ) {
-      IClasspathAttribute attribute = attributes[j];
-      if(IClasspathAttribute.JAVADOC_LOCATION_ATTRIBUTE_NAME.equals(attribute.getName())) {
-        return attribute.getValue();
-      }
-    }
-    return null;
+    return MavenClasspathHelpers.getAttribute(entry, IClasspathAttribute.JAVADOC_LOCATION_ATTRIBUTE_NAME);
+  }
+
+  public String getSourceAttachmentEncoding(IClasspathEntry entry) {
+    return MavenClasspathHelpers.getAttribute(entry, IClasspathAttribute.SOURCE_ATTACHMENT_ENCODING);
   }
 
   /** public for unit tests only */
@@ -580,16 +598,90 @@ public class BuildPathManager implements IMavenProjectChangedListener, IResource
     int type = event.getType();
     if(IResourceChangeEvent.PRE_DELETE == type) {
       // remove custom source and javadoc configuration
-      File attachmentProperties = getSourceAttachmentPropertiesFile((IProject) event.getResource());
+      IProject project = (IProject) event.getResource();
+      File attachmentProperties = getSourceAttachmentPropertiesFile(project);
       if(attachmentProperties.exists() && !attachmentProperties.delete()) {
         log.error("Can't delete " + attachmentProperties.getAbsolutePath()); //$NON-NLS-1$
       }
 
       // remove classpath container state
-      File containerState = getContainerStateFile((IProject) event.getResource());
+      File containerState = getContainerStateFile(project);
       if(containerState.exists() && !containerState.delete()) {
         log.error("Can't delete " + containerState.getAbsolutePath()); //$NON-NLS-1$
       }
+
+      requiredModulesMap.remove(project.getLocation().toString());
+
+    } else if(IResourceChangeEvent.POST_CHANGE == type) {
+
+      IResourceDelta delta = event.getDelta(); // workspace delta
+      IResourceDelta[] resourceDeltas = delta.getAffectedChildren();
+      final Set<IProject> affectedProjects = new LinkedHashSet<IProject>(resourceDeltas.length);
+      ModuleInfoDetector visitor = new ModuleInfoDetector(affectedProjects);
+      for(IResourceDelta d : resourceDeltas) {
+        IProject project = (IProject) d.getResource();
+        if(!ModuleSupport.isMavenJavaProject(project)) {
+          continue;
+        }
+        try {
+          d.accept(visitor, false);
+        } catch(CoreException ex) {
+          log.error(ex.getMessage(), ex);
+        }
+      }
+      if(affectedProjects.isEmpty()) {
+        return;
+      }
+
+      Job job = new WorkspaceJob(Messages.BuildPathManager_update_module_path_job_name) {
+        @Override
+        public IStatus runInWorkspace(IProgressMonitor monitor) {
+          SubMonitor subMonitor = SubMonitor.convert(monitor, affectedProjects.size());
+          for(IProject p : affectedProjects) {
+            if(monitor.isCanceled()) {
+              return Status.CANCEL_STATUS;
+            }
+            if(requiresUpdate(p, subMonitor)) {
+              monitor.setTaskName(p.getName());
+              updateClasspath(p, subMonitor.newChild(1));
+            }
+          }
+          return Status.OK_STATUS;
+        }
+
+        private boolean requiresUpdate(IProject p, IProgressMonitor monitor) {
+          if(!ModuleSupport.isMavenJavaProject(p)) {
+            return false;
+          }
+
+          IJavaProject jp = JavaCore.create(p);
+          try {
+            IModuleDescription moduleDescription = jp.getModuleDescription();
+            if(moduleDescription == null) {
+              return false;
+            }
+            String location = p.getLocation().toString();
+            Set<String> requiredModules = new TreeSet<>(ModuleSupport.getRequiredModules(jp, monitor));
+            if(monitor.isCanceled()) {
+              return false;
+            }
+            // Probably not the best way to detect if module path has changed, like, on the very 1st time a 
+            // module-info.java is modified, there will be no previous state to compare to, but should work 
+            // well enough the rest of the time, for cases that don't involve obscure module path configs
+            Set<String> oldRequiredModules = requiredModulesMap.get(location);
+            if(requiredModules.equals(oldRequiredModules)) {
+              return false;
+            }
+            requiredModulesMap.put(location, requiredModules);
+            return true;
+          } catch(JavaModelException ex) {
+            log.error(ex.getMessage(), ex);
+          }
+          return false;
+        }
+      };
+      job.setRule(MavenPlugin.getProjectConfigurationManager().getRule());
+      job.schedule();
     }
   }
 
@@ -721,7 +813,7 @@ public class BuildPathManager implements IMavenProjectChangedListener, IResource
   }
 
   public void scheduleDownload(IPackageFragmentRoot fragment, boolean downloadSources, boolean downloadJavadoc) {
-    ArtifactKey artifact = (ArtifactKey) fragment.getAdapter(ArtifactKey.class);
+    ArtifactKey artifact = fragment.getAdapter(ArtifactKey.class);
 
     if(artifact == null) {
       // we don't know anything about this JAR/ZIP
@@ -785,28 +877,34 @@ public class BuildPathManager implements IMavenProjectChangedListener, IResource
     }
   }
 
+  /**
+   * Returns an array of {@link ArtifactKey}s. ArtifactKey[0], holds the sources {@link ArtifactKey}, if source download
+   * was requested and sources are available. ArtifactKey[1], holds the javadoc {@link ArtifactKey}, if javadoc download
+   * was requested, or requested sources are unavailable, and javadoc is available
+   */
   ArtifactKey[] getAttachedSourcesAndJavadoc(ArtifactKey a, List<ArtifactRepository> repositories,
       boolean downloadSources, boolean downloadJavaDoc) throws CoreException {
-    ArtifactKey sourcesArtifact = new ArtifactKey(a.getGroupId(), a.getArtifactId(), a.getVersion(),
-        getSourcesClassifier(a.getClassifier()));
-    ArtifactKey javadocArtifact = new ArtifactKey(a.getGroupId(), a.getArtifactId(), a.getVersion(),
-        CLASSIFIER_JAVADOC);
-
-    if(repositories != null) {
-      downloadSources = downloadSources && !isUnavailable(sourcesArtifact, repositories);
-      downloadJavaDoc = downloadJavaDoc && !isUnavailable(javadocArtifact, repositories);
-    }
-
     ArtifactKey[] result = new ArtifactKey[2];
-
-    if(downloadSources) {
-      result[0] = sourcesArtifact;
+    if(repositories != null) {
+      ArtifactKey sourcesArtifact = new ArtifactKey(a.getGroupId(), a.getArtifactId(), a.getVersion(),
+          getSourcesClassifier(a.getClassifier()));
+      ArtifactKey javadocArtifact = new ArtifactKey(a.getGroupId(), a.getArtifactId(), a.getVersion(),
+          CLASSIFIER_JAVADOC);
+      if(downloadSources) {
+        if(isUnavailable(sourcesArtifact, repositories)) {
+          // 501553: fall back to requesting JavaDoc, if requested sources are missing, 
+          // but only if it doesn't exist locally
+          if(getAttachedArtifactFile(a, CLASSIFIER_JAVADOC) == null) {
+            downloadJavaDoc = true;
+          }
+        } else {
+          result[0] = sourcesArtifact;
+        }
+      }
+      if(downloadJavaDoc && !isUnavailable(javadocArtifact, repositories)) {
+        result[1] = javadocArtifact;
+      }
     }
-
-    if(downloadJavaDoc) {
-      result[1] = javadocArtifact;
-    }
-
     return result;
   }
 
@@ -844,5 +942,26 @@ public class BuildPathManager implements IMavenProjectChangedListener, IResource
     } catch(CoreException e) {
       log.error(e.getMessage(), e);
     }
+  }
+
+  static class ModuleInfoDetector implements IResourceDeltaVisitor {
+
+    private Collection<IProject> affectedProjects;
+
+    public ModuleInfoDetector(Collection<IProject> affectedProjects) {
+      this.affectedProjects = affectedProjects;
+    }
+
+    public boolean visit(IResourceDelta delta) {
+      if(delta.getResource() instanceof IFile) {
+        IFile file = (IFile) delta.getResource();
+        if(ModuleSupport.MODULE_INFO_JAVA.equals(file.getName())) {
+          affectedProjects.add(file.getProject());
+        }
+        return false;
+      }
+      return true;
+    }
+
   }
 }

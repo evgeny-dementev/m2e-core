@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2008-2010 Sonatype, Inc.
+ * Copyright (c) 2008-2018 Sonatype, Inc. and others.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Eclipse Public License v1.0
  * which accompanies this distribution, and is available at
@@ -13,7 +13,7 @@ package org.eclipse.m2e.editor.pom;
 
 import java.io.IOException;
 import java.io.StringWriter;
-import java.io.UnsupportedEncodingException;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -297,10 +297,12 @@ public class MavenPomEditor extends FormEditor implements IResourceChangeListene
         try {
           IMarker[] markers = pomFile.findMarkers(IMavenConstants.MARKER_ID, true, IResource.DEPTH_ZERO);
           final String msg = markers != null && markers.length > 0 //
-              ? markers[0].getAttribute(IMarker.MESSAGE, "Unknown error") : null;
+              ? markers[0].getAttribute(IMarker.MESSAGE, "Unknown error")
+              : null;
           final int severity = markers != null && markers.length > 0
               ? (markers[0].getAttribute(IMarker.SEVERITY, IMarker.SEVERITY_ERROR) == IMarker.SEVERITY_WARNING
-                  ? IMessageProvider.WARNING : IMessageProvider.ERROR)
+                  ? IMessageProvider.WARNING
+                  : IMessageProvider.ERROR)
               : IMessageProvider.NONE;
 
           Display.getDefault().asyncExec(new Runnable() {
@@ -517,11 +519,7 @@ public class MavenPomEditor extends FormEditor implements IResourceChangeListene
     if(effectivePomEditorInput == null) {
       String content = Messages.MavenPomEditor_loading;
       String name = getPartName() + Messages.MavenPomEditor_effective;
-      try {
-        effectivePomEditorInput = new MavenStorageEditorInput(name, name, null, content.getBytes("UTF-8"));
-      } catch(UnsupportedEncodingException e) {
-        effectivePomEditorInput = new MavenStorageEditorInput(name, name, null, content.getBytes());
-      }
+      effectivePomEditorInput = new MavenStorageEditorInput(name, name, null, content.getBytes(StandardCharsets.UTF_8));
     }
     return effectivePomEditorInput;
   }
@@ -537,9 +535,9 @@ public class MavenPomEditor extends FormEditor implements IResourceChangeListene
       return MavenPomEditor.this.getMavenProject();
     }
 
-    public Object getAdapter(Class adapter) {
+    public <T> T getAdapter(Class<T> adapter) {
       if(MavenProject.class.equals(adapter)) {
-        return getMavenProject();
+        return adapter.cast(getMavenProject());
       }
       return null;
     }
@@ -1050,17 +1048,16 @@ public class MavenPomEditor extends FormEditor implements IResourceChangeListene
   }
 
   @Override
-  @SuppressWarnings("rawtypes")
-  public Object getAdapter(Class adapter) {
+  public <T> T getAdapter(Class<T> adapter) {
     if(MavenProject.class.equals(adapter)) {
-      return getMavenProject();
+      return adapter.cast(getMavenProject());
     }
 
-    Object result = super.getAdapter(adapter);
+    T result = super.getAdapter(adapter);
     if(result != null && Display.getCurrent() == null) {
       return result;
     }
-    return sourcePage.getAdapter(adapter);
+    return adapter.cast(sourcePage.getAdapter(adapter));
   }
 
   public IFile getPomFile() {

@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2008-2010 Sonatype, Inc.
+ * Copyright (c) 2008-2018 Sonatype, Inc. and others.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Eclipse Public License v1.0
  * which accompanies this distribution, and is available at
@@ -141,7 +141,7 @@ public class WorkingSetGroup {
         if(element instanceof IWorkingSet) {
           return ((IWorkingSet) element).getLabel();
         } else if(element instanceof List<?>) {
-          StringBuffer sb = new StringBuffer();
+          StringBuilder sb = new StringBuilder();
           for(Object o : (List<?>) element) {
             if(o instanceof IWorkingSet) {
               if(sb.length() > 0) {
@@ -232,7 +232,7 @@ public class WorkingSetGroup {
     for(IWorkingSet workingSet : workingSetManager.getWorkingSets()) {
       if(!workingSet.isEmpty()) {
         IAdaptable[] elements = workingSet.getElements();
-        IResource resource = (IResource) elements[0].getAdapter(IResource.class);
+        IResource resource = elements[0].getAdapter(IResource.class);
         if(resource != null) {
           workingSets.add(workingSet);
         }

@@ -11,13 +11,6 @@
 
 package org.eclipse.m2e.core.internal.index.nexus;
 
-import io.takari.aether.client.AetherClient;
-import io.takari.aether.client.AetherClientAuthentication;
-import io.takari.aether.client.AetherClientConfig;
-import io.takari.aether.client.AetherClientProxy;
-import io.takari.aether.client.Response;
-import io.takari.aether.okhttp.OkHttpAetherClient;
-
 import java.io.BufferedOutputStream;
 import java.io.File;
 import java.io.FileNotFoundException;
@@ -25,12 +18,19 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+
 import java.net.MalformedURLException;
 import java.net.URL;
+
+import java.security.NoSuchAlgorithmException;
+
 import java.util.HashMap;
 import java.util.Map;
 
-import com.google.common.io.Closer;
+import javax.net.ssl.SSLContext;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import org.eclipse.core.runtime.IProgressMonitor;
 import org.eclipse.core.runtime.NullProgressMonitor;
@@ -42,6 +42,14 @@ import org.apache.maven.wagon.proxy.ProxyInfo;
 import org.apache.maven.wagon.proxy.ProxyUtils;
 
 import org.eclipse.m2e.core.internal.MavenPluginActivator;
+import org.eclipse.m2e.core.internal.Messages;
+
+import io.takari.aether.client.AetherClient;
+import io.takari.aether.client.AetherClientAuthentication;
+import io.takari.aether.client.AetherClientConfig;
+import io.takari.aether.client.AetherClientProxy;
+import io.takari.aether.client.Response;
+import io.takari.aether.okhttp.OkHttpAetherClient;
 
 
 public class AetherClientResourceFetcher extends AbstractResourceFetcher {
@@ -77,14 +85,10 @@ public class AetherClientResourceFetcher extends AbstractResourceFetcher {
   }
 
   public void retrieve(String name, File targetFile) throws IOException, FileNotFoundException {
-
     String url = baseUrl + "/" + name;
-    Response response = aetherClient.get(url);
-
-    Closer closer = Closer.create();
-    try {
-      InputStream is = closer.register(response.getInputStream());
-      OutputStream os = closer.register(new BufferedOutputStream(new FileOutputStream(targetFile)));
+    try (Response response = aetherClient.get(url);
+        InputStream is = response.getInputStream();
+        OutputStream os = new BufferedOutputStream(new FileOutputStream(targetFile))) {
       final byte[] buffer = new byte[1024 * 1024];
       int n = 0;
       while(-1 != (n = is.read(buffer))) {
@@ -93,12 +97,11 @@ public class AetherClientResourceFetcher extends AbstractResourceFetcher {
           throw new OperationCanceledException();
         }
       }
-    } finally {
-      closer.close();
     }
   }
 
   class AetherClientConfigAdapter extends AetherClientConfig {
+    private final Logger log = LoggerFactory.getLogger(AetherClientConfigAdapter.class);
 
     int connectionTimeout;
 
@@ -118,6 +121,13 @@ public class AetherClientResourceFetcher extends AbstractResourceFetcher {
       this.proxyInfo = proxyInfo;
       this.userAgent = userAgent;
       this.headers = headers;
+
+      try {
+        // ensure JVM's trust & key stores are used
+        setSslSocketFactory(SSLContext.getDefault().getSocketFactory());
+      } catch(NoSuchAlgorithmException ex) {
+        log.warn(Messages.AetherClientConfigAdapter_error_sslContext);
+      }
     }
 
     public String getUserAgent() {

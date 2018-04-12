@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2008-2013 Sonatype, Inc.
+ * Copyright (c) 2008-2018 Sonatype, Inc.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Eclipse Public License v1.0
  * which accompanies this distribution, and is available at
@@ -14,6 +14,7 @@ package org.eclipse.m2e.jdt.internal;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -31,6 +32,7 @@ import org.eclipse.core.runtime.IPath;
 import org.eclipse.core.runtime.IProgressMonitor;
 import org.eclipse.core.runtime.Path;
 import org.eclipse.core.runtime.SubMonitor;
+import org.eclipse.jdt.core.IAccessRule;
 import org.eclipse.jdt.core.IClasspathEntry;
 import org.eclipse.jdt.core.IJavaProject;
 import org.eclipse.jdt.core.JavaCore;
@@ -52,6 +54,7 @@ import org.eclipse.m2e.core.project.configurator.ILifecycleMapping;
 import org.eclipse.m2e.core.project.configurator.ProjectConfigurationRequest;
 import org.eclipse.m2e.jdt.IClasspathDescriptor;
 import org.eclipse.m2e.jdt.IClasspathEntryDescriptor;
+import org.eclipse.m2e.jdt.IClasspathManager;
 import org.eclipse.m2e.jdt.IJavaProjectConfigurator;
 import org.eclipse.m2e.jdt.MavenJdtPlugin;
 
@@ -76,12 +79,11 @@ public abstract class AbstractJavaProjectConfigurator extends AbstractProjectCon
 
   public static final String COMPILER_PLUGIN_GROUP_ID = "org.apache.maven.plugins";
 
-  protected static final List<String> RELEASES = Arrays.asList("6,7,8,9".split(",")); //$NON-NLS-1$ //$NON-NLS-2$
+  protected static final List<String> RELEASES;
 
-  protected static final List<String> SOURCES = Arrays.asList("1.1,1.2,1.3,1.4,1.5,5,1.6,6,1.7,7,1.8,8,9".split(",")); //$NON-NLS-1$ //$NON-NLS-2$
+  protected static final List<String> SOURCES;
 
-  protected static final List<String> TARGETS = Arrays
-      .asList("1.1,1.2,1.3,1.4,jsr14,1.5,5,1.6,6,1.7,7,1.8,8,9".split(",")); //$NON-NLS-1$ //$NON-NLS-2$
+  protected static final List<String> TARGETS;
 
   private static final String GOAL_RESOURCES = "resources";
 
@@ -94,6 +96,13 @@ public abstract class AbstractJavaProjectConfigurator extends AbstractProjectCon
   protected static final LinkedHashMap<String, String> ENVIRONMENTS = new LinkedHashMap<String, String>();
 
   static {
+
+    List<String> sources = new ArrayList<>(Arrays.asList("1.1,1.2,1.3,1.4,1.5,5,1.6,6,1.7,7,1.8,8,9".split(","))); //$NON-NLS-1$ //$NON-NLS-2$
+
+    List<String> targets = new ArrayList<>(Arrays.asList("1.1,1.2,1.3,1.4,jsr14,1.5,5,1.6,6,1.7,7,1.8,8,9".split(","))); //$NON-NLS-1$ //$NON-NLS-2$
+
+    List<String> releases = new ArrayList<>(Arrays.asList("6,7,8,9".split(","))); //$NON-NLS-1$ //$NON-NLS-2$
+
     ENVIRONMENTS.put("1.1", "JRE-1.1"); //$NON-NLS-1$ //$NON-NLS-2$
     ENVIRONMENTS.put("1.2", "J2SE-1.2"); //$NON-NLS-1$ //$NON-NLS-2$
     ENVIRONMENTS.put("1.3", "J2SE-1.3"); //$NON-NLS-1$ //$NON-NLS-2$
@@ -104,6 +113,18 @@ public abstract class AbstractJavaProjectConfigurator extends AbstractProjectCon
     ENVIRONMENTS.put("1.7", "JavaSE-1.7"); //$NON-NLS-1$ //$NON-NLS-2$
     ENVIRONMENTS.put("1.8", "JavaSE-1.8"); //$NON-NLS-1$ //$NON-NLS-2$
     ENVIRONMENTS.put("9", "JavaSE-9"); //$NON-NLS-1$ //$NON-NLS-2$
+
+    IExecutionEnvironment javaSe10 = JavaRuntime.getExecutionEnvironmentsManager().getEnvironment("JavaSE-10");//$NON-NLS-1$
+    if(javaSe10 != null) {
+      String level = "10";//$NON-NLS-1$
+      sources.add(level);
+      targets.add(level);
+      releases.add(level);
+      ENVIRONMENTS.put(level, javaSe10.getId());
+    }
+    SOURCES = Collections.unmodifiableList(sources);
+    TARGETS = Collections.unmodifiableList(targets);
+    RELEASES = Collections.unmodifiableList(releases);
   }
 
   protected static final String DEFAULT_COMPILER_LEVEL = "1.5"; //$NON-NLS-1$
@@ -216,10 +237,15 @@ public abstract class AbstractJavaProjectConfigurator extends AbstractProjectCon
 
   protected void addMavenClasspathContainer(IClasspathDescriptor classpath) {
     List<IClasspathEntryDescriptor> descriptors = classpath.getEntryDescriptors();
+    List<IAccessRule> accessRules = new ArrayList<>();
     boolean isExported = false;
     for(IClasspathEntryDescriptor descriptor : descriptors) {
       if(MavenClasspathHelpers.isMaven2ClasspathContainer(descriptor.getPath())) {
         isExported = descriptor.isExported();
+        List<IAccessRule> previousAccessRules = descriptor.getAccessRules();
+        if(previousAccessRules != null) {
+          accessRules.addAll(previousAccessRules);
+        }
         break;
       }
     }
@@ -228,6 +254,9 @@ public abstract class AbstractJavaProjectConfigurator extends AbstractProjectCon
     // add new entry without removing existing entries first, see bug398121
     IClasspathEntryDescriptor entryDescriptor = classpath.addEntry(cpe);
     entryDescriptor.setExported(isExported);
+    for(IAccessRule accessRule : accessRules) {
+      entryDescriptor.addAccessRule(accessRule);
+    }
   }
 
   protected void addProjectSourceFolders(IClasspathDescriptor classpath, ProjectConfigurationRequest request,
@@ -305,14 +334,14 @@ public abstract class AbstractJavaProjectConfigurator extends AbstractProjectCon
       }
 
       addSourceDirs(classpath, project, mavenProject.getCompileSourceRoots(), classes.getFullPath(), inclusion,
-          exclusion, mainSourceEncoding, mon.newChild(1));
+          exclusion, mainSourceEncoding, mon.newChild(1), false);
       addResourceDirs(classpath, project, mavenProject, mavenProject.getBuild().getResources(), classes.getFullPath(),
-          mainResourcesEncoding, mon.newChild(1));
+          mainResourcesEncoding, mon.newChild(1), false);
 
       addSourceDirs(classpath, project, mavenProject.getTestCompileSourceRoots(), testClasses.getFullPath(),
-          inclusionTest, exclusionTest, testSourceEncoding, mon.newChild(1));
+          inclusionTest, exclusionTest, testSourceEncoding, mon.newChild(1), true);
       addResourceDirs(classpath, project, mavenProject, mavenProject.getBuild().getTestResources(),
-          testClasses.getFullPath(), testResourcesEncoding, mon.newChild(1));
+          testClasses.getFullPath(), testResourcesEncoding, mon.newChild(1), true);
     } finally {
       mon.done();
     }
@@ -340,8 +369,8 @@ public abstract class AbstractJavaProjectConfigurator extends AbstractProjectCon
   }
 
   private void addSourceDirs(IClasspathDescriptor classpath, IProject project, List<String> sourceRoots,
-      IPath outputPath, IPath[] inclusion, IPath[] exclusion, String sourceEncoding, IProgressMonitor monitor)
-      throws CoreException {
+      IPath outputPath, IPath[] inclusion, IPath[] exclusion, String sourceEncoding, IProgressMonitor monitor,
+      boolean isTest) throws CoreException {
 
     for(int i = 0; i < sourceRoots.size(); i++ ) {
       IFolder sourceFolder = getFolder(project, sourceRoots.get(i));
@@ -372,12 +401,15 @@ public abstract class AbstractJavaProjectConfigurator extends AbstractProjectCon
         // source folder entries are created even when corresponding resources do not actually exist in workspace
         // to keep JDT from complaining too loudly about non-existing folders, 
         // all source entries are marked as generated (a.k.a. optional)
-        classpath.addSourceEntry(sourceFolder.getFullPath(), outputPath, inclusion, exclusion, true /*generated*/);
+        IClasspathEntryDescriptor descriptor = classpath.addSourceEntry(sourceFolder.getFullPath(), outputPath,
+            inclusion, exclusion, true /*generated*/);
+        descriptor.setClasspathAttribute(IClasspathManager.TEST_ATTRIBUTE, isTest ? "true" : null);
       } else {
         log.info("Not adding source folder " + sourceFolder.getFullPath() + " because it overlaps with "
             + enclosing.getPath());
       }
     }
+
   }
 
   private IClasspathEntryDescriptor getEnclosingEntryDescriptor(IClasspathDescriptor classpath, IPath fullPath) {
@@ -399,7 +431,7 @@ public abstract class AbstractJavaProjectConfigurator extends AbstractProjectCon
   }
 
   private void addResourceDirs(IClasspathDescriptor classpath, IProject project, MavenProject mavenProject,
-      List<Resource> resources, IPath outputPath, String resourceEncoding, IProgressMonitor monitor)
+      List<Resource> resources, IPath outputPath, String resourceEncoding, IProgressMonitor monitor, boolean isTest)
       throws CoreException {
 
     for(Resource resource : resources) {
@@ -439,7 +471,7 @@ public abstract class AbstractJavaProjectConfigurator extends AbstractProjectCon
             // skip adding resource folders that are included by other resource folders
             log.info("Skipping resource folder " + path + " since it's contained by another resource folder");
           } else {
-            addResourceFolder(classpath, path, outputPath);
+            addResourceFolder(classpath, path, outputPath, isTest);
           }
 
           // Set folder encoding (null = platform default)
@@ -453,10 +485,12 @@ public abstract class AbstractJavaProjectConfigurator extends AbstractProjectCon
     }
   }
 
-  private void addResourceFolder(IClasspathDescriptor classpath, IPath resourceFolder, IPath outputPath) {
+  private void addResourceFolder(IClasspathDescriptor classpath, IPath resourceFolder, IPath outputPath,
+      boolean isTest) {
     log.info("Adding resource folder " + resourceFolder);
-    classpath.addSourceEntry(resourceFolder, outputPath, DEFAULT_INCLUSIONS, new IPath[] {new Path("**")},
-        false /*optional*/);
+    IClasspathEntryDescriptor descriptor = classpath.addSourceEntry(resourceFolder, outputPath, DEFAULT_INCLUSIONS,
+        new IPath[] {new Path("**")}, false /*optional*/);
+    descriptor.setClasspathAttribute(IClasspathManager.TEST_ATTRIBUTE, isTest ? "true" : null);
   }
 
   private void configureOverlapWithSource(IClasspathDescriptor classpath, IClasspathEntryDescriptor enclosing,
@@ -517,11 +551,13 @@ public abstract class AbstractJavaProjectConfigurator extends AbstractProjectCon
     //New release flag in JDK 9. See http://mail.openjdk.java.net/pipermail/jdk9-dev/2015-July/002414.html
     String release = null;
 
+    boolean generateParameters = false;
     for(MojoExecution execution : getCompilerMojoExecutions(request, monitor)) {
       release = getCompilerLevel(request.getMavenProject(), execution, "release", release, RELEASES, monitor);
       //XXX ignoring testRelease option, since JDT doesn't support main/test classpath separation - yet
       source = getCompilerLevel(request.getMavenProject(), execution, "source", source, SOURCES, monitor); //$NON-NLS-1$
       target = getCompilerLevel(request.getMavenProject(), execution, "target", target, TARGETS, monitor); //$NON-NLS-1$
+      generateParameters = generateParameters || isGenerateParameters(request.getMavenProject(), execution, monitor); //$NON-NLS-1$
     }
 
     if(release != null) {
@@ -540,22 +576,60 @@ public abstract class AbstractJavaProjectConfigurator extends AbstractProjectCon
 
     }
 
-    // While "5" and "6" ... are valid synonyms for Java 5, Java 6 ... source,
+    // While "5" and "6" ... are valid synonyms for Java 5, Java 6 ... source/target,
     // Eclipse expects the values 1.5 and 1.6 and so on.
     source = sanitizeJavaVersion(source);
-    // While "5" and "6" ... are valid synonyms for Java 5, Java 6 ... target,
-    // Eclipse expects the values 1.5 and 1.6 and so on.
     target = sanitizeJavaVersion(target);
 
     options.put(JavaCore.COMPILER_SOURCE, source);
     options.put(JavaCore.COMPILER_COMPLIANCE, source);
     options.put(JavaCore.COMPILER_CODEGEN_TARGET_PLATFORM, target);
+    if(generateParameters) {
+      options.put(JavaCore.COMPILER_CODEGEN_METHOD_PARAMETERS_ATTR, JavaCore.GENERATE);
+    }
 
     // 360962 keep forbidden_reference severity set by the user
     IJavaProject jp = JavaCore.create(request.getProject());
     if(jp != null && jp.getOption(JavaCore.COMPILER_PB_FORBIDDEN_REFERENCE, false) == null) {
       options.put(JavaCore.COMPILER_PB_FORBIDDEN_REFERENCE, "warning"); //$NON-NLS-1$
     }
+  }
+
+  private boolean isGenerateParameters(MavenProject mavenProject, MojoExecution execution, IProgressMonitor monitor) {
+    Boolean generateParameters = null;
+    //1st, check the parameters option
+    try {
+      generateParameters = maven.getMojoParameterValue(mavenProject, execution, "parameters", Boolean.class, monitor);//$NON-NLS-1$
+    } catch(Exception ex) {
+      //ignore
+    }
+
+    //2nd, check the parameters flag in the compilerArgs list
+    if(!Boolean.TRUE.equals(generateParameters)) {
+      try {
+        List<?> args = maven.getMojoParameterValue(mavenProject, execution, "compilerArgs", List.class, monitor);//$NON-NLS-1$
+        if(args != null) {
+          generateParameters = args.contains("-parameters");//$NON-NLS-1$
+        }
+      } catch(Exception ex) {
+        //ignore
+      }
+    }
+
+    //3rd, check the parameters flag in the compilerArgument String
+    if(!Boolean.TRUE.equals(generateParameters)) {
+      try {
+        String compilerArgument = maven.getMojoParameterValue(mavenProject, execution, "compilerArgument", String.class, //$NON-NLS-1$
+            monitor);
+        if(compilerArgument != null) {
+          generateParameters = compilerArgument.contains("-parameters");//$NON-NLS-1$
+        }
+      } catch(CoreException ex) {
+        //ignore
+      }
+    }
+    //Let's ignore the <compilerArguments> Map, deprecated since maven-compiler-plugin 3.1 (in 2014).
+    return Boolean.TRUE.equals(generateParameters);
   }
 
   private String sanitizeJavaVersion(String version) {
@@ -652,7 +726,6 @@ public abstract class AbstractJavaProjectConfigurator extends AbstractProjectCon
     return new Path(relative.replace('\\', '/')); //$NON-NLS-1$ //$NON-NLS-2$
   }
 
-  @SuppressWarnings("restriction")
   public void configureClasspath(IMavenProjectFacade facade, IClasspathDescriptor classpath, IProgressMonitor monitor)
       throws CoreException {
     ModuleSupport.configureClasspath(facade, classpath, monitor);

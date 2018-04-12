@@ -64,7 +64,6 @@ public class ProjectConversionParticipantSorter {
 
   private List<AbstractProjectConversionParticipant> sortedConverters;
 
-  @SuppressWarnings("unchecked")
   public ProjectConversionParticipantSorter(List<AbstractProjectConversionParticipant> converters)
       throws CycleDetectedException, DuplicateConversionParticipantException {
 
@@ -103,7 +102,7 @@ public class ProjectConversionParticipantSorter {
     }
 
     //Add edges
-    for(Vertex converterVx : (List<Vertex>) dag.getVerticies()) {
+    for(Vertex converterVx : dag.getVerticies()) {
       String converterId = converterVx.getLabel();
 
       AbstractProjectConversionParticipant converter = converterMap.get(converterId);
